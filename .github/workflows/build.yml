@@ -96,3 +96,32 @@ jobs:
           path: flickerfix-${{ matrix.variant }}.img.zst
           compression-level: 0
           if-no-files-found: error
+
+  # Publish the images of the main branch as a release, so they can be
+  # downloaded without a GitHub login (workflow artifacts need one).
+  release:
+    name: publish latest release
+    needs: image
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Replace the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l
+          sha256sum flickerfix-*.img.zst > SHA256SUMS
+          echo "${GITHUB_SHA}" > COMMIT
+          # The tag has to move to this commit, so recreate the release.
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest --target "$GITHUB_SHA" \
+            --title "Latest test images" \
+            --notes "Built from ${GITHUB_SHA} by run ${GITHUB_RUN_ID}. Replaced on every push to main. Write to a USB drive with tools/flash-usb.sh." \
+            flickerfix-patched.img.zst flickerfix-baseline.img.zst SHA256SUMS COMMIT
