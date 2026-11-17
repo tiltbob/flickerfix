@@ -60,8 +60,11 @@ CSV="$OUT/cycles.csv"
 
 EDP_DBG=$(ls -d /sys/kernel/debug/dri/*/eDP-* 2>/dev/null | head -n1)
 EDP_SYS=$(ls -d /sys/class/drm/card*-eDP-* 2>/dev/null | head -n1)
-AUX=$(ls -d "$EDP_SYS"/drm_dp_aux* 2>/dev/null | head -n1)
-AUX=/dev/${AUX##*/}
+AUX=
+if [ -n "$EDP_SYS" ]; then
+	AUX=$(ls -d "$EDP_SYS"/drm_dp_aux* 2>/dev/null | head -n1)
+	AUX=/dev/${AUX##*/}
+fi
 
 {
 	echo "variant:   $VARIANT"
@@ -80,6 +83,12 @@ AUX=/dev/${AUX##*/}
 } > "$OUT/info.txt"
 [ -n "$EDP_SYS" ] && cp "$EDP_SYS/edid" "$OUT/edid.bin" 2>/dev/null
 dmesg -c > "$OUT/dmesg/boot.log"
+# The patched kernel logs this line when its panel quirk matches.
+if grep -q 'Min DP pre-emphasis level' "$OUT/dmesg/boot.log"; then
+	echo "quirk:     applied" >> "$OUT/info.txt"
+else
+	echo "quirk:     not applied" >> "$OUT/info.txt"
+fi
 sync
 
 if [ -z "$EDP_DBG" ] || [ "$(cat "$EDP_SYS/status" 2>/dev/null)" != connected ]; then
@@ -107,7 +116,8 @@ measure() {	# measure <phase> <cycle> <off_ms>
 	log="$OUT/dmesg/$1-$(printf '%03d' "$2").log"
 	sleep 2
 	dmesg -c > "$log"
-	retrained=$(grep -c dp_log_training_result "$log")
+	# One "HBR3x4 pass VS=1, PE=2, DS=..." line per link training.
+	retrained=$(grep -c 'VS=[0-9]*, PE=[0-9]*' "$log")
 	# The bad trainings report "receive port in sync" (DPCD 0x205 bit 0)
 	# while the lanes only have clock recovery.
 	early=$(grep -c '0x00202 AUX -> (ret=  6) 11 11 00 01' "$log")
