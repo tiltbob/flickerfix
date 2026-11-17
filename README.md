@@ -51,13 +51,14 @@ shared by the two variants.
 
 `.github/workflows/build.yml` builds both variants on GitHub Actions and
 uploads each image as a zstd-compressed artifact. It caches `dl/` and
-`ccache/` between runs.
+`ccache/` between runs. Builds of `main` are also published as the
+`latest` release, which can be downloaded without a GitHub login.
 
 ## Use
 
 1. Write the image to a USB drive of 4 GB or more. Either a local build:
    `dd if=flickerfix-patched.img of=/dev/sdX bs=4M conv=fsync`
-   or the latest image built by GitHub Actions (needs `gh`, asks before
+   or the image from the latest release (asks before
    writing, refuses anything that is not a USB drive):
    `tools/flash-usb.sh patched /dev/sdX` (add `-s` to sign it as well).
    The device can be left out if a `.usb-device` file at the top of the
