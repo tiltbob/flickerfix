@@ -1,0 +1,183 @@
+#!/bin/sh
+# Automated eDP link-training test. Runs from the initramfs at boot.
+#
+# Each cycle turns the panel off and on again (framebuffer blank, then
+# suspend/resume), which makes the driver retrain the eDP link. After each
+# retrain it records the drive settings the training ended on and the
+# panel's own symbol error counters. Results go to the FFRESULTS partition
+# of the USB drive the system booted from.
+
+DPMS_CYCLES=150
+SUSPEND_CYCLES=15
+MEASURE_SECS=3
+POWEROFF_SECS=30
+
+VARIANT=$(cat /etc/flickerfix-variant 2>/dev/null || echo unknown)
+RES=/mnt/results
+FB_BLANK=/sys/class/graphics/fb0/blank
+
+say() { echo "$*"; }
+
+finish() {	# finish <message>
+	sync
+	umount "$RES" 2>/dev/null
+	say
+	say "=================================================="
+	say " $1"
+	say " Results are saved. You can remove the USB drive."
+	say "=================================================="
+	if [ "$POWEROFF_SECS" -gt 0 ]; then
+		say "Powering off in $POWEROFF_SECS seconds."
+		sleep "$POWEROFF_SECS"
+		poweroff -f
+	fi
+	exit 0
+}
+
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+mkdir -p "$RES"
+
+say "flickerfix test, $VARIANT kernel $(uname -r)"
+say "Waiting for the results partition..."
+DEV=
+for i in $(seq 1 30); do
+	DEV=$(findfs LABEL=FFRESULTS 2>/dev/null) && break
+	sleep 1
+done
+if [ -z "$DEV" ] || ! mount -t vfat -o flush "$DEV" "$RES"; then
+	say "ERROR: could not mount the FFRESULTS partition. Nothing will be saved."
+	sleep 60
+	poweroff -f
+fi
+
+[ -f "$RES/flickerfix.conf" ] && . "$RES/flickerfix.conf"
+
+n=1
+while [ -e "$RES/results/run-$(printf '%03d' $n)-$VARIANT" ]; do n=$((n + 1)); done
+OUT="$RES/results/run-$(printf '%03d' $n)-$VARIANT"
+mkdir -p "$OUT/dmesg"
+CSV="$OUT/cycles.csv"
+
+EDP_DBG=$(ls -d /sys/kernel/debug/dri/*/eDP-* 2>/dev/null | head -n1)
+EDP_SYS=$(ls -d /sys/class/drm/card*-eDP-* 2>/dev/null | head -n1)
+AUX=$(ls -d "$EDP_SYS"/drm_dp_aux* 2>/dev/null | head -n1)
+AUX=/dev/${AUX##*/}
+
+{
+	echo "variant:   $VARIANT"
+	echo "kernel:    $(uname -r) $(uname -v)"
+	echo "cmdline:   $(cat /proc/cmdline)"
+	echo "date:      $(date '+%F %T') (RTC)"
+	echo "vendor:    $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)"
+	echo "product:   $(cat /sys/class/dmi/id/product_name 2>/dev/null)"
+	echo "board:     $(cat /sys/class/dmi/id/board_name 2>/dev/null)"
+	echo "bios:      $(cat /sys/class/dmi/id/bios_version 2>/dev/null)"
+	echo "connector: $EDP_SYS"
+	echo "debugfs:   $EDP_DBG"
+	echo "aux:       $AUX"
+	echo "mem_sleep: $(cat /sys/power/mem_sleep 2>/dev/null)"
+	echo "settings:  DPMS_CYCLES=$DPMS_CYCLES SUSPEND_CYCLES=$SUSPEND_CYCLES MEASURE_SECS=$MEASURE_SECS"
+} > "$OUT/info.txt"
+[ -n "$EDP_SYS" ] && cp "$EDP_SYS/edid" "$OUT/edid.bin" 2>/dev/null
+dmesg -c > "$OUT/dmesg/boot.log"
+sync
+
+if [ -z "$EDP_DBG" ] || [ "$(cat "$EDP_SYS/status" 2>/dev/null)" != connected ]; then
+	echo "verdict: NO_PANEL (no connected eDP panel driven by amdgpu)" > "$OUT/summary.txt"
+	finish "No internal panel found on an AMD GPU. Nothing was tested."
+fi
+
+dpcd() {	# dpcd <offset> <count> : DPCD bytes as hex, space separated
+	[ -c "$AUX" ] || return 0
+	timeout 2 dd if="$AUX" bs=1 skip=$(($1)) count="$2" 2>/dev/null |
+		od -An -tx1 | tr -s ' \n' ' ' | sed 's/^ //; s/ $//'
+}
+
+errors() {	# errors : symbol error count per lane, "e0 e1 e2 e3"
+	set -- $(dpcd 0x210 8)
+	[ $# -eq 8 ] || { echo "-1 -1 -1 -1"; return; }
+	echo "$(( (0x$2 << 8 | 0x$1) & 0x7fff )) $(( (0x$4 << 8 | 0x$3) & 0x7fff ))" \
+	     "$(( (0x$6 << 8 | 0x$5) & 0x7fff )) $(( (0x$8 << 8 | 0x$7) & 0x7fff ))"
+}
+
+echo "phase,cycle,off_ms,retrained,vs,pe,early_sync,lane_status,err0,err1,err2,err3" > "$CSV"
+
+measure() {	# measure <phase> <cycle> <off_ms>
+	local log phy vs pe retrained early status e
+	log="$OUT/dmesg/$1-$(printf '%03d' "$2").log"
+	sleep 2
+	dmesg -c > "$log"
+	retrained=$(grep -c dp_log_training_result "$log")
+	# The bad trainings report "receive port in sync" (DPCD 0x205 bit 0)
+	# while the lanes only have clock recovery.
+	early=$(grep -c '0x00202 AUX -> (ret=  6) 11 11 00 01' "$log")
+	phy=$(tr -d '\0' < "$EDP_DBG/phy_settings" 2>/dev/null)
+	set -- $1 $2 $3 $phy
+	vs=${4:--1}; pe=${5:--1}
+	status=$(dpcd 0x202 6 | tr ' ' '_')
+	errors > /dev/null			# reading clears the counters
+	sleep "$MEASURE_SECS"
+	e=$(errors | tr ' ' ',')
+	echo "$1,$2,$3,$retrained,$vs,$pe,$early,$status,$e" >> "$CSV"
+	say "$1 $2: trained VS=$vs PE=$pe  errors/lane: $e"
+	sync
+}
+
+say "Panel: $EDP_SYS. Running $DPMS_CYCLES screen off/on cycles."
+i=1
+while [ "$i" -le "$DPMS_CYCLES" ]; do
+	off_ms=$(( 300 + $(od -An -N2 -tu2 /dev/urandom) % 3700 ))
+	echo 4 > "$FB_BLANK"
+	usleep $((off_ms * 1000))
+	echo 0 > "$FB_BLANK"
+	measure dpms "$i" "$off_ms"
+	i=$((i + 1))
+done
+
+if [ "$SUSPEND_CYCLES" -gt 0 ]; then
+	say "Running $SUSPEND_CYCLES suspend/resume cycles."
+fi
+i=1
+while [ "$i" -le "$SUSPEND_CYCLES" ]; do
+	secs=$(( 5 + $(od -An -N1 -tu1 /dev/urandom) % 10 ))
+	echo "suspend $i: going to sleep for ${secs}s" >> "$OUT/progress.txt"
+	sync
+	if ! rtcwake -m mem -s "$secs" > /dev/null 2>&1; then
+		echo "suspend $i: rtcwake failed, skipping the rest" >> "$OUT/progress.txt"
+		say "Suspend failed; skipping the remaining suspend cycles."
+		break
+	fi
+	measure suspend "$i" $((secs * 1000))
+	i=$((i + 1))
+done
+
+# Summary. A training counts as bad if it ended below pre-emphasis level 2
+# or the link showed more than 10 symbol errors in the measuring window.
+awk -F, -v variant="$VARIANT" '
+NR > 1 {
+	n++
+	if ($4 > 0) trained++
+	if ($6 >= 0 && $6 < 2) lowpe++
+	if ($7 > 0) early++
+	if ($9 + $10 + $11 + $12 > 10) errs++
+	if ($9 < 0) noread++
+}
+END {
+	printf "variant:                        %s\n", variant
+	printf "cycles run:                     %d\n", n
+	printf "cycles that retrained the link: %d\n", trained
+	printf "ended below pre-emphasis 2:     %d\n", lowpe
+	printf "early-sync signature seen:      %d\n", early
+	printf "cycles with link errors:        %d\n", errs
+	printf "cycles without error readout:   %d\n", noread
+	if (n == 0 || trained == 0)
+		v = "INCONCLUSIVE (the link was never retrained)"
+	else if (lowpe > 0 || errs > 0)
+		v = "BAD (weak training or link errors seen)"
+	else
+		v = "GOOD (every training ended at level 2 or above, no link errors)"
+	printf "verdict: %s\n", v
+}' "$CSV" > "$OUT/summary.txt"
+
+cat "$OUT/summary.txt"
+finish "Test finished: $(grep '^verdict' "$OUT/summary.txt")"
