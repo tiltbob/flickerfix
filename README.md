@@ -10,9 +10,29 @@ The patch makes the driver refuse to train this panel below level 2.
 
 ## Status
 
-**Work in progress. The image has never been built or booted.** Only this
-much is verified: Buildroot 2026.08.1 accepts `flickerfix_defconfig`, and the
-shell scripts pass a syntax check.
+**Work in progress. The image has not run on the laptop yet.**
+
+Verified:
+
+- Both the build and the boot path: the patched image builds with
+  Buildroot 2026.08.1 and boots in QEMU under OVMF from an emulated USB
+  drive. There it finds no eDP panel, writes a run directory with verdict
+  `NO_PANEL` to `FFRESULTS` and powers off (`tools/qemu-smoke-test.sh`).
+- The script's DPCD byte parsing and log matching, against made-up data,
+  with the BusyBox from the image.
+
+Not verified, needs the laptop:
+
+- that amdgpu loads its firmware from the built-in initramfs and lights
+  the panel,
+- that blanking the framebuffer console retrains the eDP link (the verdict
+  is `INCONCLUSIVE` if it does not),
+- that the DPCD reads over `/dev/drm_dp_aux*` work,
+- that `rtcwake` suspend and resume returns,
+- `tools/sign-usb.sh` (needs sbctl keys and a written drive).
+
+The EFI binary is about 55 MB. It is unsigned: turn Secure Boot off, or
+sign it on the written drive with `sudo tools/sign-usb.sh` (sbctl).
 
 ## Build
 
@@ -26,11 +46,24 @@ The wrapper clones Buildroot 2026.08.1 into `buildroot/` and builds into
 `output/<variant>/`. The kernel is mainline 7.4-rc3, the tree the patch was
 written against.
 
+Downloads are kept in `dl/` and the compiler cache in `ccache/`, both
+shared by the two variants.
+
+`.github/workflows/build.yml` builds both variants on GitHub Actions and
+uploads each image as a zstd-compressed artifact. It caches `dl/` and
+`ccache/` between runs.
+
 ## Use
 
-1. Write the image to a USB drive of 4 GB or more:
+1. Write the image to a USB drive of 4 GB or more. Either a local build:
    `dd if=flickerfix-patched.img of=/dev/sdX bs=4M conv=fsync`
-2. Turn Secure Boot off on the laptop and boot from the drive.
+   or the latest image built by GitHub Actions (needs `gh`, asks before
+   writing, refuses anything that is not a USB drive):
+   `tools/flash-usb.sh patched /dev/sdX` (add `-s` to sign it as well).
+   The device can be left out if a `.usb-device` file at the top of the
+   repository names the drive (not committed).
+2. Turn Secure Boot off on the laptop, or sign the drive with
+   `sudo tools/sign-usb.sh`, and boot from the drive.
 3. The test runs by itself and powers the laptop off when it is done.
 4. Send back the `results/run-NNN-<variant>/` directory from the
    `FFRESULTS` partition of the drive.
@@ -65,5 +98,7 @@ come out BAD about once in 30 cycles.
 - `board/flickerfix/` - kernel and BusyBox config fragments, image layout,
   build hooks, root filesystem overlay with the test script
 - `patches/linux/` - the kernel fix (applied in the `patched` variant only)
-- `tools/` - scripts used on the installed system to find the bug
-  (`flicker-watch-install.sh` collector service, `flicker-test.sh`)
+- `tools/` - `qemu-smoke-test.sh`, `flash-usb.sh` and `sign-usb.sh` for the
+  image; scripts
+  used on the installed system to find the bug (`flicker-watch-install.sh`
+  collector service, `flicker-test.sh`)

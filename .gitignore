@@ -1,4 +1,6 @@
 /buildroot/
 /output/
 /dl/
+/ccache/
 /*.img
+/.usb-device
