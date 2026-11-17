@@ -59,7 +59,9 @@ uploads each image as a zstd-compressed artifact. It caches `dl/` and
    `dd if=flickerfix-patched.img of=/dev/sdX bs=4M conv=fsync`
    or the latest image built by GitHub Actions (needs `gh`, asks before
    writing, refuses anything that is not a USB drive):
-   `tools/flash-usb.sh patched /dev/sdX` (add `-s` to sign it as well)
+   `tools/flash-usb.sh patched /dev/sdX` (add `-s` to sign it as well).
+   The device can be left out if a `.usb-device` file at the top of the
+   repository names the drive (not committed).
 2. Turn Secure Boot off on the laptop, or sign the drive with
    `sudo tools/sign-usb.sh`, and boot from the drive.
 3. The test runs by itself and powers the laptop off when it is done.

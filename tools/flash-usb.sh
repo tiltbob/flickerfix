@@ -2,8 +2,12 @@
 # Download a flickerfix image built by GitHub Actions and write it to a USB
 # drive.
 #
-#   tools/flash-usb.sh patched /dev/sdX
-#   tools/flash-usb.sh baseline /dev/sdX
+#   tools/flash-usb.sh patched [/dev/sdX]
+#   tools/flash-usb.sh baseline [/dev/sdX]
+#
+# Without a device, the drive named in the file .usb-device at the top of
+# this repository is used (one line, best a /dev/disk/by-id/usb-... path,
+# which always means the same physical drive). That file is not committed.
 #
 # Options (before the variant):
 #   -b <branch>   take the latest successful build of this branch
@@ -23,7 +27,7 @@ WORKFLOW=build.yml
 BRANCH= RUN= FILE= SIGN= YES=
 
 die() { echo "flash-usb: $*" >&2; exit 1; }
-usage() { sed -n '2,18s/^# \{0,1\}//p' "$0"; exit "${1:-1}"; }
+usage() { sed -n '2,22s/^# \{0,1\}//p' "$0"; exit "${1:-1}"; }
 
 while getopts b:r:f:syh opt; do
 	case $opt in
@@ -37,9 +41,16 @@ while getopts b:r:f:syh opt; do
 	esac
 done
 shift $((OPTIND - 1))
-[ $# -eq 2 ] || usage
+[ $# -eq 1 ] || [ $# -eq 2 ] || usage
 VARIANT=$1
-DEV=$2
+DEV=${2:-}
+DEV_FILE=$(dirname "$0")/../.usb-device
+if [ -z "$DEV" ]; then
+	[ -f "$DEV_FILE" ] || die "no device given and no .usb-device file in the repository"
+	DEV=$(sed -n '/^[^#]/{p;q}' "$DEV_FILE")
+	[ -n "$DEV" ] || die ".usb-device is empty"
+	[ -e "$DEV" ] || die "the drive from .usb-device is not plugged in: $DEV"
+fi
 
 case $VARIANT in
 patched|baseline) ;;
@@ -49,6 +60,7 @@ esac
 # --- Check the target before downloading anything -------------------------
 
 [ -b "$DEV" ] || die "$DEV is not a block device"
+DEV=$(readlink -f "$DEV")	# /dev/disk/by-id/... -> /dev/sdX
 [ "$(lsblk -dno TYPE "$DEV")" = disk ] ||
 	die "$DEV is not a whole disk (give the drive, not a partition)"
 TRAN=$(lsblk -dno TRAN "$DEV")
