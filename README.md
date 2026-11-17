@@ -55,8 +55,11 @@ uploads each image as a zstd-compressed artifact. It caches `dl/` and
 
 ## Use
 
-1. Write the image to a USB drive of 4 GB or more:
+1. Write the image to a USB drive of 4 GB or more. Either a local build:
    `dd if=flickerfix-patched.img of=/dev/sdX bs=4M conv=fsync`
+   or the latest image built by GitHub Actions (needs `gh`, asks before
+   writing, refuses anything that is not a USB drive):
+   `tools/flash-usb.sh patched /dev/sdX` (add `-s` to sign it as well)
 2. Turn Secure Boot off on the laptop, or sign the drive with
    `sudo tools/sign-usb.sh`, and boot from the drive.
 3. The test runs by itself and powers the laptop off when it is done.
@@ -93,6 +96,7 @@ come out BAD about once in 30 cycles.
 - `board/flickerfix/` - kernel and BusyBox config fragments, image layout,
   build hooks, root filesystem overlay with the test script
 - `patches/linux/` - the kernel fix (applied in the `patched` variant only)
-- `tools/` - `qemu-smoke-test.sh` and `sign-usb.sh` for the image; scripts
+- `tools/` - `qemu-smoke-test.sh`, `flash-usb.sh` and `sign-usb.sh` for the
+  image; scripts
   used on the installed system to find the bug (`flicker-watch-install.sh`
   collector service, `flicker-test.sh`)
