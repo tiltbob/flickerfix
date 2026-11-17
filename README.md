@@ -10,26 +10,27 @@ The patch makes the driver refuse to train this panel below level 2.
 
 ## Status
 
-**Work in progress. The image has not run on the laptop yet.**
+**The image works on the laptop, but it has not reproduced the bug yet.**
 
-Verified:
+First hardware run (baseline image, PSR disabled): 150 screen off/on cycles
+and 15 suspend/resume cycles, 165 link trainings, every one ended at
+pre-emphasis level 2 with no link errors. The installed system gives a bad
+training about once in 30. So that run says nothing about the fix.
 
-- Both the build and the boot path: the patched image builds with
-  Buildroot 2026.08.1 and boots in QEMU under OVMF from an emulated USB
-  drive. There it finds no eDP panel, writes a run directory with verdict
-  `NO_PANEL` to `FFRESULTS` and powers off (`tools/qemu-smoke-test.sh`).
-- The script's DPCD byte parsing and log matching, against made-up data,
-  with the BusyBox from the image.
+It did show that the harness works on the hardware: amdgpu loads its
+firmware from the built-in initramfs, blanking the framebuffer console
+retrains the eDP link, the DPCD reads over `/dev/drm_dp_aux*` work, and
+`rtcwake` suspend and resume returns.
 
-Not verified, needs the laptop:
+The image now leaves PSR enabled, as the installed system does, and
+records the PSR state around every power cycle. That version has not run
+on the laptop yet.
 
-- that amdgpu loads its firmware from the built-in initramfs and lights
-  the panel,
-- that blanking the framebuffer console retrains the eDP link (the verdict
-  is `INCONCLUSIVE` if it does not),
-- that the DPCD reads over `/dev/drm_dp_aux*` work,
-- that `rtcwake` suspend and resume returns,
-- `tools/sign-usb.sh` (needs sbctl keys and a written drive).
+Also verified: CI builds both variants; the released images boot in QEMU
+under OVMF (`tools/qemu-smoke-test.sh`, verdict `NO_PANEL`).
+
+Not verified: `tools/sign-usb.sh` and `tools/flash-usb.sh` were used for
+the first run, but no report on them has been recorded here.
 
 The EFI binary is about 55 MB. It is unsigned: turn Secure Boot off, or
 sign it on the written drive with `sudo tools/sign-usb.sh` (sbctl).
