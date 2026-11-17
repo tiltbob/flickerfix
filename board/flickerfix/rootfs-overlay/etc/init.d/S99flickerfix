@@ -1,0 +1,7 @@
+#!/bin/sh
+# Run the test on the first console as soon as the system is up.
+case "$1" in
+start)
+	/usr/sbin/flickerfix-test < /dev/tty1 > /dev/tty1 2>&1
+	;;
+esac

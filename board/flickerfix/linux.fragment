@@ -1,0 +1,51 @@
+# Everything is built in: the kernel, its initramfs (the whole test system)
+# and the command line form one EFI binary.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="console=tty0 loglevel=4 log_buf_len=16M drm.debug=0x106 amdgpu.dcdebugmask=0x10"
+# The image is compressed as a whole, so leave the initramfs uncompressed.
+CONFIG_INITRAMFS_COMPRESSION_NONE=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# AMD graphics, with a framebuffer console so the panel is lit without
+# any userspace graphics stack.
+CONFIG_DRM=y
+CONFIG_DRM_AMDGPU=y
+CONFIG_DRM_AMD_DC=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_DISPLAY_DP_AUX_CHARDEV=y
+CONFIG_FB=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FONTS=y
+CONFIG_FONT_TER16x32=y
+CONFIG_BACKLIGHT_CLASS_DEVICE=y
+CONFIG_FW_LOADER=y
+CONFIG_DEBUG_FS=y
+# Keep other GPU drivers out of the way.
+# CONFIG_DRM_I915 is not set
+
+# Suspend to idle and RTC wake-up.
+CONFIG_SUSPEND=y
+CONFIG_ACPI=y
+CONFIG_PINCTRL=y
+CONFIG_PINCTRL_AMD=y
+CONFIG_X86_PLATFORM_DRIVERS_AMD=y
+CONFIG_AMD_PMC=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_CMOS=y
+
+# The USB drive that takes the results.
+CONFIG_USB=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_XHCI_PCI=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_UAS=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_EFI_PARTITION=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y

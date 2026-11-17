@@ -1,0 +1,235 @@
+From a0c8675352d72f4f4c61e3ddb386a0a58050a3f2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 17:25:43 +0000
+Subject: [PATCH] drm/amd/display: Don't train the SDC 0x41B3 eDP panel below
+ pre-emphasis level 2
+
+The 2880x1800 120 Hz OLED panel of the HP ZBook Ultra G1a 14 (EDID
+SDC 0x41B3) sometimes flickers after the panel has been turned off and
+on again, for example after resume from s2idle or a DPMS cycle. The
+flicker lasts until the next link training, which is why a refresh rate
+change makes it go away.
+
+The link trains at HBR3 x4. Normally channel equalization takes three
+iterations: the panel rejects pre-emphasis levels 0 and 1, asks for
+level 2 and reports EQ done there:
+
+  0x00202 -> 11 11 00 00 55 55
+  0x00103 <- 09 09 09 09
+  0x00202 -> 71 71 80 01 59 59
+  0x00103 <- 11 11 11 11
+  0x00202 -> 77 77 81 01 99 99
+  HBR3x4 pass VS=1, PE=2
+
+About once in 30 trainings the panel reports EQ done at level 1
+instead, without asking for more:
+
+  0x00202 -> 11 11 00 01 55 55
+  0x00103 <- 09 09 09 09
+  0x00202 -> 77 77 81 01 55 55
+  HBR3x4 pass VS=1, PE=1
+
+In those cases the panel also already reports RECEIVE_PORT_0 in sync
+(DPCD 0x205) in the first EQ iteration, which it never does otherwise.
+
+The link then runs with symbol errors. DPCD 0x210-0x217 read every
+10 seconds gave 125/4536/104/28 errors for lanes 0-3 while the screen
+flickered, and 0 on every lane when trained at level 2. Raising the
+pre-emphasis to level 2 through the phy_settings debugfs file, without
+retraining, stopped the flicker and brought the counters back to 0.
+
+Three out of three observed flicker events were trained at level 1,
+and none of about 45 trainings that ended at level 2 flickered.
+
+Add a minimum pre-emphasis level to the link and apply it whenever the
+sink requests a lane adjustment during 8b/10b link training, limited to
+what the voltage swing allows. Set it to level 2 for this panel through
+an EDID quirk, so that the training ends where it ends in the good
+case. The minimum is not set for any other sink.
+
+Why the panel now and then accepts level 1 is not known; this works
+around it.
+
+Observed on 7.3.4. The KUnit test for the quirk passes; the change in
+the link training sequence itself has not been tested on the panel yet.
+
+Developed with the help of an AI coding assistant, which analysed the
+kernel logs and DPCD dumps collected on the affected laptop and wrote
+the patch.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019ZwPNfjaPptsT3PDC4bNpU
+---
+ .../amd/display/amdgpu_dm/amdgpu_dm_helpers.c | 13 +++++++++
+ .../amdgpu_dm/tests/amdgpu_dm_helpers_test.c  | 22 +++++++++++++++
+ drivers/gpu/drm/amd/display/dc/dc.h           |  6 ++++
+ .../dc/link/protocols/link_dp_training.c      | 28 +++++++++++++++++++
+ .../link/protocols/link_dp_training_8b_10b.c  |  1 +
+ .../amd/display/include/link_service_types.h  |  5 ++++
+ 6 files changed, 75 insertions(+)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c
+index 52c084f3be..cae893e004 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c
+@@ -139,6 +139,19 @@ STATIC_IFN_KUNIT void apply_edid_quirks(struct dc_link *link, struct edid *edid,
+ 			link->ctx->dc->debug.psr_phy_force_phy_power_down_up_level_2 = true;
+ 		}
+ 		break;
++	/*
++	 * Workaround for the HP ZBook Ultra G1a 14 OLED panel, which now and
++	 * then reports channel equalization done at pre-emphasis level 1.
++	 * The link then runs with symbol errors and the screen flickers until
++	 * the next link training. Do not train this panel below level 2.
++	 */
++	case drm_edid_encode_panel_id('S', 'D', 'C', 0x41B3):
++		if (dc_is_embedded_signal(link->connector_signal)) {
++			drm_dbg_driver(dev, "Min DP pre-emphasis level 2 on panel id %X\n",
++				       panel_id);
++			link->min_dp_pre_emphasis = PRE_EMPHASIS_LEVEL2;
++		}
++		break;
+ 	/* Workaround for monitors that get corrupted by the PHY SSC reduction */
+ 	case drm_edid_encode_panel_id('D', 'E', 'L', 0x4147):
+ 		drm_dbg_driver(dev, "Skip PHY SSC reduction on panel id %X\n", panel_id);
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_helpers_test.c b/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_helpers_test.c
+index 2127d8d4a6..1854c036d0 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_helpers_test.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_helpers_test.c
+@@ -220,6 +220,26 @@ static void dm_test_apply_edid_quirks_skip_phy_ssc(struct kunit *test)
+ 	KUNIT_EXPECT_TRUE(test, link->wa_flags.skip_phy_ssc_reduction);
+ }
+ 
++/**
++ * dm_test_apply_edid_quirks_min_pre_emphasis - Test SDC 0x41B3 pre-emphasis quirk
++ * @test: The KUnit test context
++ */
++static void dm_test_apply_edid_quirks_min_pre_emphasis(struct kunit *test)
++{
++	struct dc_edid_caps edid_caps = {0};
++	struct dc_link *link = dm_test_quirk_link(test);
++	struct edid *edid = dm_test_edid_with_panel_id(test,
++			drm_edid_encode_panel_id('S', 'D', 'C', 0x41B3));
++
++	link->connector_signal = SIGNAL_TYPE_DISPLAY_PORT;
++	apply_edid_quirks(link, edid, &edid_caps);
++	KUNIT_EXPECT_EQ(test, link->min_dp_pre_emphasis, PRE_EMPHASIS_DISABLED);
++
++	link->connector_signal = SIGNAL_TYPE_EDP;
++	apply_edid_quirks(link, edid, &edid_caps);
++	KUNIT_EXPECT_EQ(test, link->min_dp_pre_emphasis, PRE_EMPHASIS_LEVEL2);
++}
++
+ /**
+  * dm_test_apply_edid_quirks_force_freesync_min - Test ACR 0x08AF FreeSync min quirk
+  * @test: The KUnit test context
+@@ -255,6 +275,7 @@ static void dm_test_apply_edid_quirks_unknown_noop(struct kunit *test)
+ 	KUNIT_EXPECT_FALSE(test, edid_caps.panel_patch.remove_sink_ext_caps);
+ 	KUNIT_EXPECT_FALSE(test, edid_caps.panel_patch.disable_colorimetry);
+ 	KUNIT_EXPECT_FALSE(test, link->wa_flags.skip_phy_ssc_reduction);
++	KUNIT_EXPECT_EQ(test, link->min_dp_pre_emphasis, PRE_EMPHASIS_DISABLED);
+ }
+ 
+ /**
+@@ -4850,6 +4871,7 @@ static struct kunit_case amdgpu_dm_helpers_test_cases[] = {
+ 	KUNIT_CASE(dm_test_apply_edid_quirks_disable_colorimetry),
+ 	KUNIT_CASE(dm_test_apply_edid_quirks_psr_phy_power_down),
+ 	KUNIT_CASE(dm_test_apply_edid_quirks_skip_phy_ssc),
++	KUNIT_CASE(dm_test_apply_edid_quirks_min_pre_emphasis),
+ 	KUNIT_CASE(dm_test_apply_edid_quirks_force_freesync_min),
+ 	KUNIT_CASE(dm_test_apply_edid_quirks_unknown_noop),
+ 	KUNIT_CASE(dm_test_apply_edid_quirks_disable_second_tile),
+diff --git a/drivers/gpu/drm/amd/display/dc/dc.h b/drivers/gpu/drm/amd/display/dc/dc.h
+index d3c484f453..a10ed72ceb 100644
+--- a/drivers/gpu/drm/amd/display/dc/dc.h
++++ b/drivers/gpu/drm/amd/display/dc/dc.h
+@@ -1982,6 +1982,12 @@ struct dc_scratch_space {
+ 		bool skip_phy_ssc_reduction;
+ 	} wa_flags;
+ 	union dc_dp_ffe_preset forced_dp_ffe_preset;
++	/*
++	 * Lowest 8b/10b pre-emphasis level link training may settle on, for
++	 * sinks that report channel equalization done at a level that is
++	 * too low to give an error free link. PRE_EMPHASIS_DISABLED for none.
++	 */
++	enum dc_pre_emphasis min_dp_pre_emphasis;
+ 	struct link_mst_stream_allocation_table mst_stream_alloc_table;
+ 
+ 	struct dc_link_status link_status;
+diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c
+index 3be36d1063..f2a0a58e5d 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c
++++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c
+@@ -351,6 +351,33 @@ static void maximize_lane_settings(const struct link_training_settings *lt_setti
+ 	}
+ }
+ 
++/*
++ * Some sinks report channel equalization done at a pre-emphasis level that
++ * does not give an error free link. Raise the pre-emphasis to the minimum
++ * level known to work for such a sink, limited to what the requested voltage
++ * swing allows.
++ */
++static void apply_min_pre_emphasis(const struct link_training_settings *lt_settings,
++		struct dc_lane_settings lane_settings[LANE_COUNT_DP_MAX])
++{
++	enum dc_pre_emphasis min_pre_emphasis;
++	uint32_t lane;
++
++	if (lt_settings->min_pre_emphasis == PRE_EMPHASIS_DISABLED ||
++			link_dp_get_encoding_format(&lt_settings->link_settings) !=
++					DP_8b_10b_ENCODING)
++		return;
++
++	for (lane = 0; lane < LANE_COUNT_DP_MAX; lane++) {
++		min_pre_emphasis = min(lt_settings->min_pre_emphasis,
++				get_max_pre_emphasis_for_voltage_swing(
++						lane_settings[lane].VOLTAGE_SWING));
++
++		if (lane_settings[lane].PRE_EMPHASIS < min_pre_emphasis)
++			lane_settings[lane].PRE_EMPHASIS = min_pre_emphasis;
++	}
++}
++
+ void dp_hw_to_dpcd_lane_settings(
+ 		const struct link_training_settings *lt_settings,
+ 		const struct dc_lane_settings hw_lane_settings[LANE_COUNT_DP_MAX],
+@@ -882,6 +909,7 @@ void dp_decide_lane_settings(
+ 		/* we find the maximum of the requested settings across all lanes*/
+ 		/* and set this maximum for all lanes*/
+ 		maximize_lane_settings(lt_settings, hw_lane_settings);
++		apply_min_pre_emphasis(lt_settings, hw_lane_settings);
+ 		override_lane_settings(lt_settings, hw_lane_settings);
+ 
+ 		if (lt_settings->always_match_dpcd_with_hw_lane_settings)
+diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training_8b_10b.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training_8b_10b.c
+index 4331e03241..751c15ff6b 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training_8b_10b.c
++++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training_8b_10b.c
+@@ -139,6 +139,7 @@ void decide_8b_10b_training_settings(
+ 	lt_settings->should_set_fec_ready = true;
+ 	lt_settings->disallow_per_lane_settings = true;
+ 	lt_settings->always_match_dpcd_with_hw_lane_settings = true;
++	lt_settings->min_pre_emphasis = link->min_dp_pre_emphasis;
+ 	lt_settings->lttpr_mode = dp_decide_8b_10b_lttpr_mode(link);
+ 	lt_settings->cr_pattern_time = (uint16_t)get_cr_training_aux_rd_interval(link, link_setting, lt_settings->lttpr_mode);
+ 	dp_hw_to_dpcd_lane_settings(lt_settings, lt_settings->hw_lane_settings, lt_settings->dpcd_lane_settings);
+diff --git a/drivers/gpu/drm/amd/display/include/link_service_types.h b/drivers/gpu/drm/amd/display/include/link_service_types.h
+index 798d832388..b4c5d36cc1 100644
+--- a/drivers/gpu/drm/amd/display/include/link_service_types.h
++++ b/drivers/gpu/drm/amd/display/include/link_service_types.h
+@@ -97,6 +97,11 @@ struct link_training_settings {
+ 	/* dpcd lane settings will always use the same hw lane settings
+ 	 * even if it doesn't match requested lane adjust */
+ 	bool always_match_dpcd_with_hw_lane_settings;
++	/*
++	 * do not go below this 8b/10b pre-emphasis level when the sink
++	 * requests a lane adjustment, as far as the voltage swing allows
++	 */
++	enum dc_pre_emphasis min_pre_emphasis;
+ 
+ 	/*****************************************************************
+ 	* training states - parameters that can change in link training
+-- 
+2.43.0
+
