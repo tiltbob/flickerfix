@@ -1,4 +1,5 @@
 /buildroot/
 /output/
 /dl/
+/ccache/
 /*.img

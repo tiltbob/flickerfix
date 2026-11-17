@@ -26,6 +26,13 @@ The wrapper clones Buildroot 2026.08.1 into `buildroot/` and builds into
 `output/<variant>/`. The kernel is mainline 7.4-rc3, the tree the patch was
 written against.
 
+Downloads are kept in `dl/` and the compiler cache in `ccache/`, both
+shared by the two variants.
+
+`.github/workflows/build.yml` builds both variants on GitHub Actions and
+uploads each image as a zstd-compressed artifact. It caches `dl/` and
+`ccache/` between runs.
+
 ## Use
 
 1. Write the image to a USB drive of 4 GB or more:

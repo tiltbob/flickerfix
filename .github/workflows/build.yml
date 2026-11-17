@@ -1,0 +1,98 @@
+name: Build images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: ${{ matrix.variant }} image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [patched, baseline]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bzip2 cpio file git patch perl python3 \
+            rsync unzip wget zstd libelf-dev libssl-dev
+
+      # Source tarballs and the external toolchain. Same for both variants;
+      # changes only when the Buildroot version or the configuration does.
+      - name: Restore download cache
+        id: dl
+        uses: actions/cache/restore@v4
+        with:
+          path: dl
+          key: dl-${{ hashFiles('Makefile', 'configs/flickerfix_defconfig') }}
+          restore-keys: dl-
+
+      # Compiler cache. A cache entry cannot be overwritten, so every run
+      # saves under a new key and restores the most recent one.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ccache
+          key: ccache-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ matrix.variant }}-
+            ccache-
+
+      - name: Build
+        run: make ${{ matrix.variant }}
+
+      - name: ccache statistics
+        id: stat
+        if: always()
+        run: |
+          ccache=output/${{ matrix.variant }}/host/bin/ccache
+          [ -x "$ccache" ] && CCACHE_DIR=$PWD/ccache "$ccache" -s || true
+          # Tell the save steps which cache directories have content.
+          for d in dl ccache; do
+            [ -n "$(ls -A $d 2>/dev/null)" ] && echo "$d=true" >> "$GITHUB_OUTPUT"
+          done
+          du -sh dl ccache 2>/dev/null || true
+
+      # Saved even when the build fails, so a retry does not start cold.
+      - name: Save download cache
+        if: always() && steps.dl.outputs.cache-hit != 'true' && steps.stat.outputs.dl == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dl
+          key: ${{ steps.dl.outputs.cache-primary-key }}
+
+      - name: Save ccache
+        if: always() && steps.stat.outputs.ccache == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ccache
+          key: ccache-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # The image is mostly the empty results partition; it compresses well.
+      - name: Compress image
+        run: |
+          ls -l flickerfix-${{ matrix.variant }}.img output/${{ matrix.variant }}/images/
+          zstd -T0 -10 --rm flickerfix-${{ matrix.variant }}.img
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flickerfix-${{ matrix.variant }}
+          path: flickerfix-${{ matrix.variant }}.img.zst
+          compression-level: 0
+          if-no-files-found: error
