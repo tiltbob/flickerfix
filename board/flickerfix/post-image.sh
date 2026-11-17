@@ -22,6 +22,7 @@ cat > "$BINARIES_DIR/flickerfix.conf" <<CONF
 DPMS_CYCLES=150        # screen off/on cycles
 SUSPEND_CYCLES=15      # suspend/resume cycles (0 to skip)
 MEASURE_SECS=3         # how long link errors are counted after each cycle
+IDLE_SECS=2            # idle time before the panel is turned off (lets PSR engage)
 POWEROFF_SECS=30       # wait before powering off at the end (0 = stay on)
 CONF
 

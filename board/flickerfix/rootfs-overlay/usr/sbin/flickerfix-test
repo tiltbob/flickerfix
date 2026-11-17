@@ -10,6 +10,7 @@
 DPMS_CYCLES=150
 SUSPEND_CYCLES=15
 MEASURE_SECS=3
+IDLE_SECS=2
 POWEROFF_SECS=30
 
 VARIANT=$(cat /etc/flickerfix-variant 2>/dev/null || echo unknown)
@@ -79,7 +80,7 @@ fi
 	echo "debugfs:   $EDP_DBG"
 	echo "aux:       $AUX"
 	echo "mem_sleep: $(cat /sys/power/mem_sleep 2>/dev/null)"
-	echo "settings:  DPMS_CYCLES=$DPMS_CYCLES SUSPEND_CYCLES=$SUSPEND_CYCLES MEASURE_SECS=$MEASURE_SECS"
+	echo "settings:  DPMS_CYCLES=$DPMS_CYCLES SUSPEND_CYCLES=$SUSPEND_CYCLES MEASURE_SECS=$MEASURE_SECS IDLE_SECS=$IDLE_SECS"
 } > "$OUT/info.txt"
 [ -n "$EDP_SYS" ] && cp "$EDP_SYS/edid" "$OUT/edid.bin" 2>/dev/null
 dmesg -c > "$OUT/dmesg/boot.log"
@@ -109,10 +110,33 @@ errors() {	# errors : symbol error count per lane, "e0 e1 e2 e3"
 	     "$(( (0x$6 << 8 | 0x$5) & 0x7fff )) $(( (0x$8 << 8 | 0x$7) & 0x7fff ))"
 }
 
-echo "phase,cycle,off_ms,retrained,vs,pe,early_sync,lane_status,err0,err1,err2,err3" > "$CSV"
+echo "phase,cycle,off_ms,retrained,vs,pe,early_sync,lane_status,err0,err1,err2,err3,psr_before,psr_after" > "$CSV"
+
+psr_state() {	# PSR state of the panel as the driver sees it (0 = inactive)
+	tr -d '\0\n' 2>/dev/null < "$EDP_DBG/psr_state" || echo -1
+}
+
+# Leave the screen alone for a moment, as on an idle desktop, so that PSR
+# can engage before the panel is turned off. Sets PSR_BEFORE.
+idle() {
+	sleep "$IDLE_SECS"
+	PSR_BEFORE=$(psr_state)
+}
+
+# Keep the picture changing, so that PSR does not shut the main link down
+# while its errors are being counted.
+busy() {	# busy <seconds>
+	local t=0
+	while [ "$t" -lt $(($1 * 20)) ]; do
+		printf '\r  counting link errors %d ' "$t"
+		usleep 50000
+		t=$((t + 1))
+	done
+	printf '\r                              \r'
+}
 
 measure() {	# measure <phase> <cycle> <off_ms>
-	local log phy vs pe retrained early status e
+	local log phy vs pe retrained early status e psr_after
 	log="$OUT/dmesg/$1-$(printf '%03d' "$2").log"
 	sleep 2
 	dmesg -c > "$log"
@@ -125,10 +149,11 @@ measure() {	# measure <phase> <cycle> <off_ms>
 	set -- $1 $2 $3 $phy
 	vs=${4:--1}; pe=${5:--1}
 	status=$(dpcd 0x202 6 | tr ' ' '_')
+	psr_after=$(psr_state)
 	errors > /dev/null			# reading clears the counters
-	sleep "$MEASURE_SECS"
+	busy "$MEASURE_SECS"
 	e=$(errors | tr ' ' ',')
-	echo "$1,$2,$3,$retrained,$vs,$pe,$early,$status,$e" >> "$CSV"
+	echo "$1,$2,$3,$retrained,$vs,$pe,$early,$status,$e,$PSR_BEFORE,$psr_after" >> "$CSV"
 	say "$1 $2: trained VS=$vs PE=$pe  errors/lane: $e"
 	sync
 }
@@ -137,6 +162,7 @@ say "Panel: $EDP_SYS. Running $DPMS_CYCLES screen off/on cycles."
 i=1
 while [ "$i" -le "$DPMS_CYCLES" ]; do
 	off_ms=$(( 300 + $(od -An -N2 -tu2 /dev/urandom) % 3700 ))
+	idle
 	echo 4 > "$FB_BLANK"
 	usleep $((off_ms * 1000))
 	echo 0 > "$FB_BLANK"
@@ -150,6 +176,7 @@ fi
 i=1
 while [ "$i" -le "$SUSPEND_CYCLES" ]; do
 	secs=$(( 5 + $(od -An -N1 -tu1 /dev/urandom) % 10 ))
+	idle
 	echo "suspend $i: going to sleep for ${secs}s" >> "$OUT/progress.txt"
 	sync
 	if ! rtcwake -m mem -s "$secs" > /dev/null 2>&1; then
@@ -171,6 +198,7 @@ NR > 1 {
 	if ($7 > 0) early++
 	if ($9 + $10 + $11 + $12 > 10) errs++
 	if ($9 < 0) noread++
+	if ($13 > 0) psr++
 }
 END {
 	printf "variant:                        %s\n", variant
@@ -180,6 +208,7 @@ END {
 	printf "early-sync signature seen:      %d\n", early
 	printf "cycles with link errors:        %d\n", errs
 	printf "cycles without error readout:   %d\n", noread
+	printf "PSR active when turned off:     %d\n", psr
 	if (n == 0 || trained == 0)
 		v = "INCONCLUSIVE (the link was never retrained)"
 	else if (lowpe > 0 || errs > 0)

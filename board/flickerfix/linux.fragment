@@ -3,7 +3,11 @@
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE="console=tty0 loglevel=4 log_buf_len=16M drm.debug=0x106 amdgpu.dcdebugmask=0x10"
+# PSR is left enabled, as on an installed system: the first hardware run,
+# with PSR off (amdgpu.dcdebugmask=0x10), never produced a bad training.
+CONFIG_CMDLINE="console=tty0 loglevel=4 log_buf_len=16M drm.debug=0x106"
+# Ignore whatever the firmware passes as load options.
+CONFIG_CMDLINE_OVERRIDE=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 
