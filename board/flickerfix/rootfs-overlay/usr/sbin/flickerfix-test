@@ -32,6 +32,19 @@ FB_BLANK=/sys/class/graphics/fb0/blank
 
 say() { echo "$*"; }
 
+# Power and temperature: "ac,battery %,battery status,hottest sensor in C".
+# The bad trainings were seen on a cooler machine with a lower battery.
+power() {
+	local ac bat stat t max=0
+	ac=$(cat /sys/class/power_supply/A*/online 2>/dev/null | head -n1)
+	bat=$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -n1)
+	stat=$(cat /sys/class/power_supply/BAT*/status 2>/dev/null | head -n1 | tr ' ,' '__')
+	for t in $(cat /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp*_input 2>/dev/null); do
+		[ "$t" -gt "$max" ] 2>/dev/null && max=$t
+	done
+	echo "${ac:--1},${bat:--1},${stat:-unknown},$((max / 1000))"
+}
+
 # The partition the results go to: the first FAT partition that has an
 # EFI/flickerfix directory. Other partitions are not touched.
 find_esp() {
@@ -169,19 +182,6 @@ errors() {	# errors : symbol error count per lane, "e0 e1 e2 e3"
 }
 
 echo "phase,cycle,off_ms,retrained,vs,pe,early_sync,lane_status,err0,err1,err2,err3,psr_before,psr_after,lt_trace,ac,bat_pct,bat_status,temp_c" > "$CSV"
-
-# Power and temperature: "ac,battery %,battery status,hottest sensor in C".
-# The bad trainings were seen on a cooler machine with a lower battery.
-power() {
-	local ac bat stat t max=0
-	ac=$(cat /sys/class/power_supply/A*/online 2>/dev/null | head -n1)
-	bat=$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -n1)
-	stat=$(cat /sys/class/power_supply/BAT*/status 2>/dev/null | head -n1 | tr ' ,' '__')
-	for t in $(cat /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp*_input 2>/dev/null); do
-		[ "$t" -gt "$max" ] 2>/dev/null && max=$t
-	done
-	echo "${ac:--1},${bat:--1},${stat:-unknown},$((max / 1000))"
-}
 
 psr_state() {	# PSR state of the panel as the driver sees it (0 = inactive)
 	tr -d '\0\n' 2>/dev/null < "$EDP_DBG/psr_state" || echo -1
