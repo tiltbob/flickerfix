@@ -1,7 +1,7 @@
-# Wrapper around Buildroot. Builds a bootable USB image per variant:
+# Wrapper around Buildroot. Builds one EFI binary per variant:
 #
-#   make            image with the kernel fix applied   -> flickerfix-patched.img
-#   make baseline   same image without the fix          -> flickerfix-baseline.img
+#   make            kernel with the fix applied   -> flickerfix-patched.efi
+#   make baseline   the same without the fix     -> flickerfix-baseline.efi
 #   make both
 #
 BUILDROOT_VERSION ?= 2026.08.1
@@ -31,9 +31,9 @@ BR = $(MAKE) -C $(BUILDROOT_DIR) O=$(CURDIR)/output/$@ BR2_EXTERNAL=$(CURDIR) \
 $(VARIANTS): $(BUILDROOT_DIR)/Makefile
 	$(BR) flickerfix_defconfig
 	$(BR)
-	cp output/$@/images/flickerfix.img flickerfix-$@.img
+	cp output/$@/images/flickerfix.efi flickerfix-$@.efi
 	@echo
-	@echo "Image ready: flickerfix-$@.img"
+	@echo "EFI binary ready: flickerfix-$@.efi"
 
 clean:
-	rm -rf output flickerfix-*.img
+	rm -rf output flickerfix-*.efi

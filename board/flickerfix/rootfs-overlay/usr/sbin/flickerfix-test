@@ -4,58 +4,109 @@
 # Each cycle turns the panel off and on again (framebuffer blank, then
 # suspend/resume), which makes the driver retrain the eDP link. After each
 # retrain it records the drive settings the training ended on and the
-# panel's own symbol error counters. Results go to the FFRESULTS partition
-# of the USB drive the system booted from.
+# panel's own symbol error counters.
+#
+# The EFI binary this runs from is installed as EFI/flickerfix/*.efi on an
+# EFI system partition. Results are collected in RAM and saved as one
+# tarball, EFI/flickerfix/results/<run>.tar.gz, on that partition. The
+# partition is only mounted for the moment a tarball is written.
 
 DPMS_CYCLES=150
 SUSPEND_CYCLES=15
 MEASURE_SECS=3
 IDLE_SECS=2
-POWEROFF_SECS=30
+SAVE_EVERY=10		# save the tarball every this many screen cycles
+END_ACTION=reboot	# reboot, poweroff or stay
+END_SECS=20
 
 VARIANT=$(cat /etc/flickerfix-variant 2>/dev/null || echo unknown)
-RES=/mnt/results
+ESP=/mnt/esp
+ESP_DIR=EFI/flickerfix
+WORK=/run/flickerfix
 FB_BLANK=/sys/class/graphics/fb0/blank
 
 say() { echo "$*"; }
 
-finish() {	# finish <message>
+# The partition the results go to: the first FAT partition that has an
+# EFI/flickerfix directory. Other partitions are not touched.
+find_esp() {
+	local p dev
+	for p in /sys/class/block/*; do
+		[ -e "$p/partition" ] || continue
+		dev=/dev/${p##*/}
+		blkid "$dev" 2>/dev/null | grep -q 'TYPE="vfat"' || continue
+		mount -t vfat -o ro "$dev" "$ESP" 2>/dev/null || continue
+		if [ -d "$ESP/$ESP_DIR" ]; then
+			umount "$ESP"
+			echo "$dev"
+			return 0
+		fi
+		umount "$ESP"
+	done
+	return 1
+}
+
+# Pack the run directory and put the tarball on the EFI system partition.
+save() {
+	[ -n "$ESP_DEV" ] || return 1
+	tar -cf - -C "$WORK" "$RUN" | gzip > "$WORK/$RUN.tar.gz" || return 1
+	mount -t vfat "$ESP_DEV" "$ESP" || return 1
+	mkdir -p "$ESP/$ESP_DIR/results" &&
+		cp "$WORK/$RUN.tar.gz" "$ESP/$ESP_DIR/results/$RUN.tar.gz.tmp" &&
+		mv -f "$ESP/$ESP_DIR/results/$RUN.tar.gz.tmp" "$ESP/$ESP_DIR/results/$RUN.tar.gz"
+	local rc=$?
 	sync
-	umount "$RES" 2>/dev/null
+	umount "$ESP"
+	return $rc
+}
+
+finish() {	# finish <message>
 	say
 	say "=================================================="
 	say " $1"
-	say " Results are saved. You can remove the USB drive."
-	say "=================================================="
-	if [ "$POWEROFF_SECS" -gt 0 ]; then
-		say "Powering off in $POWEROFF_SECS seconds."
-		sleep "$POWEROFF_SECS"
-		poweroff -f
+	if save; then
+		say " Results: $ESP_DIR/results/$RUN.tar.gz"
+		say " on the EFI system partition ($ESP_DEV)."
+	else
+		say " ERROR: THE RESULTS COULD NOT BE SAVED."
 	fi
+	say "=================================================="
+	case $END_ACTION in
+	reboot)
+		say "Rebooting in $END_SECS seconds."
+		sleep "$END_SECS"; reboot -f ;;
+	poweroff)
+		say "Powering off in $END_SECS seconds."
+		sleep "$END_SECS"; poweroff -f ;;
+	esac
 	exit 0
 }
 
 mount -t debugfs none /sys/kernel/debug 2>/dev/null
-mkdir -p "$RES"
+mkdir -p "$ESP" "$WORK"
 
 say "flickerfix test, $VARIANT kernel $(uname -r)"
-say "Waiting for the results partition..."
-DEV=
+say "Looking for the EFI system partition with $ESP_DIR ..."
+ESP_DEV=
 for i in $(seq 1 30); do
-	DEV=$(findfs LABEL=FFRESULTS 2>/dev/null) && break
+	ESP_DEV=$(find_esp) && break
 	sleep 1
 done
-if [ -z "$DEV" ] || ! mount -t vfat -o flush "$DEV" "$RES"; then
-	say "ERROR: could not mount the FFRESULTS partition. Nothing will be saved."
-	sleep 60
-	poweroff -f
-fi
-
-[ -f "$RES/flickerfix.conf" ] && . "$RES/flickerfix.conf"
 
 n=1
-while [ -e "$RES/results/run-$(printf '%03d' $n)-$VARIANT" ]; do n=$((n + 1)); done
-OUT="$RES/results/run-$(printf '%03d' $n)-$VARIANT"
+if [ -n "$ESP_DEV" ] && mount -t vfat -o ro "$ESP_DEV" "$ESP"; then
+	[ -f "$ESP/$ESP_DIR/flickerfix.conf" ] && . "$ESP/$ESP_DIR/flickerfix.conf"
+	while [ -e "$ESP/$ESP_DIR/results/flickerfix-run-$(printf '%03d' $n)-$VARIANT.tar.gz" ]; do
+		n=$((n + 1))
+	done
+	umount "$ESP"
+else
+	ESP_DEV=
+	say "ERROR: no partition with $ESP_DIR found. Nothing will be saved."
+	sleep 20
+fi
+RUN=flickerfix-run-$(printf '%03d' $n)-$VARIANT
+OUT=$WORK/$RUN
 mkdir -p "$OUT/dmesg"
 CSV="$OUT/cycles.csv"
 
@@ -79,6 +130,7 @@ fi
 	echo "connector: $EDP_SYS"
 	echo "debugfs:   $EDP_DBG"
 	echo "aux:       $AUX"
+	echo "esp:       $ESP_DEV"
 	echo "mem_sleep: $(cat /sys/power/mem_sleep 2>/dev/null)"
 	echo "settings:  DPMS_CYCLES=$DPMS_CYCLES SUSPEND_CYCLES=$SUSPEND_CYCLES MEASURE_SECS=$MEASURE_SECS IDLE_SECS=$IDLE_SECS"
 } > "$OUT/info.txt"
@@ -90,7 +142,7 @@ if grep -q 'Min DP pre-emphasis level' "$OUT/dmesg/boot.log"; then
 else
 	echo "quirk:     not applied" >> "$OUT/info.txt"
 fi
-sync
+save
 
 if [ -z "$EDP_DBG" ] || [ "$(cat "$EDP_SYS/status" 2>/dev/null)" != connected ]; then
 	echo "verdict: NO_PANEL (no connected eDP panel driven by amdgpu)" > "$OUT/summary.txt"
@@ -155,7 +207,6 @@ measure() {	# measure <phase> <cycle> <off_ms>
 	e=$(errors | tr ' ' ',')
 	echo "$1,$2,$3,$retrained,$vs,$pe,$early,$status,$e,$PSR_BEFORE,$psr_after" >> "$CSV"
 	say "$1 $2: trained VS=$vs PE=$pe  errors/lane: $e"
-	sync
 }
 
 say "Panel: $EDP_SYS. Running $DPMS_CYCLES screen off/on cycles."
@@ -167,6 +218,7 @@ while [ "$i" -le "$DPMS_CYCLES" ]; do
 	usleep $((off_ms * 1000))
 	echo 0 > "$FB_BLANK"
 	measure dpms "$i" "$off_ms"
+	[ $((i % SAVE_EVERY)) -eq 0 ] && save
 	i=$((i + 1))
 done
 
@@ -176,9 +228,9 @@ fi
 i=1
 while [ "$i" -le "$SUSPEND_CYCLES" ]; do
 	secs=$(( 5 + $(od -An -N1 -tu1 /dev/urandom) % 10 ))
-	idle
 	echo "suspend $i: going to sleep for ${secs}s" >> "$OUT/progress.txt"
-	sync
+	save		# a suspend that never returns must not lose the run
+	idle
 	if ! rtcwake -m mem -s "$secs" > /dev/null 2>&1; then
 		echo "suspend $i: rtcwake failed, skipping the rest" >> "$OUT/progress.txt"
 		say "Suspend failed; skipping the remaining suspend cycles."

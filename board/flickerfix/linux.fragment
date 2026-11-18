@@ -38,7 +38,9 @@ CONFIG_AMD_PMC=y
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_CMOS=y
 
-# The USB drive that takes the results.
+# The EFI system partition that takes the results: on the internal NVMe
+# drive, or on a USB drive.
+CONFIG_BLK_DEV_NVME=y
 CONFIG_USB=y
 CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_XHCI_PCI=y
