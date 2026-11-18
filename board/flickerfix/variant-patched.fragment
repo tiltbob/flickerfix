@@ -1,0 +1,3 @@
+# Names the variant in the kernel release string (uname -r). The test script
+# reads it from there, so the root filesystem is the same for both variants.
+CONFIG_LOCALVERSION="-patched"

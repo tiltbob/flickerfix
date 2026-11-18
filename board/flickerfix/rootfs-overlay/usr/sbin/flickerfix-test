@@ -19,7 +19,12 @@ SAVE_EVERY=10		# save the tarball every this many screen cycles
 END_ACTION=reboot	# reboot, poweroff or stay
 END_SECS=20
 
-VARIANT=$(cat /etc/flickerfix-variant 2>/dev/null || echo unknown)
+# The kernel release ends in the variant name (CONFIG_LOCALVERSION).
+case $(uname -r) in
+*-patched) VARIANT=patched ;;
+*-baseline) VARIANT=baseline ;;
+*) VARIANT=unknown ;;
+esac
 ESP=/mnt/esp
 ESP_DIR=EFI/flickerfix
 WORK=/run/flickerfix

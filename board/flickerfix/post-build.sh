@@ -4,7 +4,8 @@
 set -eu
 TARGET_DIR=$1
 
-echo "${FLICKERFIX_VARIANT:-baseline}" > "$TARGET_DIR/etc/flickerfix-variant"
+# Nothing variant-specific goes in here: both kernels embed this same root
+# filesystem.
 
 # Nothing in this image uses the network, and no log daemon should compete
 # with the test for the kernel log.

@@ -40,15 +40,19 @@ and booting through BootNext.
 ## Build
 
 ```
-make            # kernel with the fix    -> flickerfix-patched.efi
+make            # both variants
+make patched    # kernel with the fix    -> flickerfix-patched.efi
 make baseline   # kernel without the fix -> flickerfix-baseline.efi
-make both
 ```
 
 The wrapper clones Buildroot 2026.08.1 into `buildroot/` and builds into
-`output/<variant>/`. The kernel is mainline 7.4-rc3, the tree the patch was
-written against. Downloads are kept in `dl/` and the compiler cache in
-`ccache/`, both shared by the two variants.
+`output/`. The kernel is mainline 7.4-rc3, the tree the patch was written
+against. Downloads are kept in `dl/` and the compiler cache in `ccache/`.
+
+Both variants share one userland: the toolchain, BusyBox, the firmware and
+the root filesystem are built once, and only the kernel is built per
+variant. The variant is named in the kernel release (`uname -r` ends in
+`-patched` or `-baseline`), not in the root filesystem.
 
 `.github/workflows/build.yml` builds both variants on GitHub Actions. Builds
 of `main` are published as the `latest` release, which can be downloaded
