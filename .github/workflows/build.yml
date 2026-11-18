@@ -1,4 +1,4 @@
-name: Build images
+name: Build EFI binaries
 
 on:
   push:
@@ -14,14 +14,10 @@ permissions:
   contents: read
 
 jobs:
-  image:
-    name: ${{ matrix.variant }} image
+  build:
+    name: build both variants
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [patched, baseline]
 
     steps:
       - uses: actions/checkout@v4
@@ -31,10 +27,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bzip2 cpio file git patch perl python3 \
-            rsync unzip wget zstd libelf-dev libssl-dev
+            rsync unzip wget libelf-dev libssl-dev
 
-      # Source tarballs and the external toolchain. Same for both variants;
-      # changes only when the Buildroot version or the configuration does.
+      # Source tarballs and the external toolchain. Changes only when the
+      # Buildroot version or the configuration does.
       - name: Restore download cache
         id: dl
         uses: actions/cache/restore@v4
@@ -49,25 +45,29 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ccache
-          key: ccache-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            ccache-${{ matrix.variant }}-
-            ccache-
+          key: ccache-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-
 
-      - name: Build
-        run: make ${{ matrix.variant }}
+      # The userland is built once. The second kernel comes from the
+      # compiler cache apart from the files the patch touches.
+      - name: Build baseline
+        run: make baseline
+
+      - name: Build patched
+        run: make patched
 
       - name: ccache statistics
         id: stat
         if: always()
         run: |
-          ccache=output/${{ matrix.variant }}/host/bin/ccache
+          ccache=output/host/bin/ccache
           [ -x "$ccache" ] && CCACHE_DIR=$PWD/ccache "$ccache" -s || true
           # Tell the save steps which cache directories have content.
           for d in dl ccache; do
             [ -n "$(ls -A $d 2>/dev/null)" ] && echo "$d=true" >> "$GITHUB_OUTPUT"
           done
           du -sh dl ccache 2>/dev/null || true
+          ls -l flickerfix-*.efi || true
 
       # Saved even when the build fails, so a retry does not start cold.
       - name: Save download cache
@@ -82,26 +82,21 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ccache
-          key: ccache-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      # The image is mostly the empty results partition; it compresses well.
-      - name: Compress image
-        run: |
-          ls -l flickerfix-${{ matrix.variant }}.img output/${{ matrix.variant }}/images/
-          zstd -T0 -10 --rm flickerfix-${{ matrix.variant }}.img
+          key: ccache-${{ github.run_id }}-${{ github.run_attempt }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: flickerfix-${{ matrix.variant }}
-          path: flickerfix-${{ matrix.variant }}.img.zst
-          compression-level: 0
+          name: flickerfix-efi
+          path: |
+            flickerfix-baseline.efi
+            flickerfix-patched.efi
           if-no-files-found: error
 
-  # Publish the images of the main branch as a release, so they can be
+  # Publish the binaries of the main branch as a release, so they can be
   # downloaded without a GitHub login (workflow artifacts need one).
   release:
     name: publish latest release
-    needs: image
+    needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -117,11 +112,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           ls -l
-          sha256sum flickerfix-*.img.zst > SHA256SUMS
+          sha256sum flickerfix-*.efi > SHA256SUMS
           echo "${GITHUB_SHA}" > COMMIT
           # The tag has to move to this commit, so recreate the release.
           gh release delete latest --cleanup-tag --yes || true
           gh release create latest --target "$GITHUB_SHA" \
-            --title "Latest test images" \
-            --notes "Built from ${GITHUB_SHA} by run ${GITHUB_RUN_ID}. Replaced on every push to main. Write to a USB drive with tools/flash-usb.sh." \
-            flickerfix-patched.img.zst flickerfix-baseline.img.zst SHA256SUMS COMMIT
+            --title "Latest test binaries" \
+            --notes "Built from ${GITHUB_SHA} by run ${GITHUB_RUN_ID}. Replaced on every push to main. Install and run with tools/flickerfix.sh." \
+            flickerfix-patched.efi flickerfix-baseline.efi SHA256SUMS COMMIT

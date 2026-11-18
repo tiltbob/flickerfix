@@ -38,7 +38,9 @@ CONFIG_AMD_PMC=y
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_DRV_CMOS=y
 
-# The USB drive that takes the results.
+# The EFI system partition that takes the results: on the internal NVMe
+# drive, or on a USB drive.
+CONFIG_BLK_DEV_NVME=y
 CONFIG_USB=y
 CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_XHCI_PCI=y
@@ -51,3 +53,10 @@ CONFIG_EFI_PARTITION=y
 CONFIG_VFAT_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
+
+# Power and temperature, recorded with every cycle.
+CONFIG_ACPI_AC=y
+CONFIG_ACPI_BATTERY=y
+CONFIG_ACPI_THERMAL=y
+CONFIG_HWMON=y
+CONFIG_SENSORS_K10TEMP=y

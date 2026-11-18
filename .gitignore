@@ -2,5 +2,5 @@
 /output/
 /dl/
 /ccache/
-/*.img
-/.usb-device
+/*.efi
+/*.tar.gz
