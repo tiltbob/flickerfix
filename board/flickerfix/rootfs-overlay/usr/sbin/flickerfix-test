@@ -137,6 +137,7 @@ fi
 	echo "aux:       $AUX"
 	echo "esp:       $ESP_DEV"
 	echo "mem_sleep: $(cat /sys/power/mem_sleep 2>/dev/null)"
+	echo "power:     $(power) (ac online, battery %, battery status, hottest sensor C)"
 	echo "settings:  DPMS_CYCLES=$DPMS_CYCLES SUSPEND_CYCLES=$SUSPEND_CYCLES MEASURE_SECS=$MEASURE_SECS IDLE_SECS=$IDLE_SECS"
 } > "$OUT/info.txt"
 [ -n "$EDP_SYS" ] && cp "$EDP_SYS/edid" "$OUT/edid.bin" 2>/dev/null
@@ -167,7 +168,20 @@ errors() {	# errors : symbol error count per lane, "e0 e1 e2 e3"
 	     "$(( (0x$6 << 8 | 0x$5) & 0x7fff )) $(( (0x$8 << 8 | 0x$7) & 0x7fff ))"
 }
 
-echo "phase,cycle,off_ms,retrained,vs,pe,early_sync,lane_status,err0,err1,err2,err3,psr_before,psr_after" > "$CSV"
+echo "phase,cycle,off_ms,retrained,vs,pe,early_sync,lane_status,err0,err1,err2,err3,psr_before,psr_after,lt_trace,ac,bat_pct,bat_status,temp_c" > "$CSV"
+
+# Power and temperature: "ac,battery %,battery status,hottest sensor in C".
+# The bad trainings were seen on a cooler machine with a lower battery.
+power() {
+	local ac bat stat t max=0
+	ac=$(cat /sys/class/power_supply/A*/online 2>/dev/null | head -n1)
+	bat=$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -n1)
+	stat=$(cat /sys/class/power_supply/BAT*/status 2>/dev/null | head -n1 | tr ' ,' '__')
+	for t in $(cat /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp*_input 2>/dev/null); do
+		[ "$t" -gt "$max" ] 2>/dev/null && max=$t
+	done
+	echo "${ac:--1},${bat:--1},${stat:-unknown},$((max / 1000))"
+}
 
 psr_state() {	# PSR state of the panel as the driver sees it (0 = inactive)
 	tr -d '\0\n' 2>/dev/null < "$EDP_DBG/psr_state" || echo -1
@@ -193,15 +207,28 @@ busy() {	# busy <seconds>
 }
 
 measure() {	# measure <phase> <cycle> <off_ms>
-	local log phy vs pe retrained early status e psr_after
+	local log phy vs pe retrained early status e psr_after trace
 	log="$OUT/dmesg/$1-$(printf '%03d' "$2").log"
 	sleep 2
 	dmesg -c > "$log"
 	# One "HBR3x4 pass VS=1, PE=2, DS=..." line per link training.
 	retrained=$(grep -c 'VS=[0-9]*, PE=[0-9]*' "$log")
 	# The bad trainings report "receive port in sync" (DPCD 0x205 bit 0)
-	# while the lanes only have clock recovery.
-	early=$(grep -c '0x00202 AUX -> (ret=  6) 11 11 00 01' "$log")
+	# with only clock recovery done and a request for pre-emphasis 1, in
+	# the first equalization step.
+	early=$(grep -c '0x00202 AUX -> (ret=  6) 11 11 00 01 55 55' "$log")
+	# The training as one string: every lane status read (DPCD
+	# 0x202-0x205, 8 hex digits), every drive setting written (w + lane 0
+	# of 0x103: 09 = swing 1, pre-emphasis 1) and every training pattern
+	# set (p + 0x102 . lane 0 setting). For example
+	#   p21.00>00000000>w01>11118000>p23.01>11110000>w09>71118001>w11>77778101
+	# In the status after w09 each 7 is a lane that reports equalized at
+	# pre-emphasis 1; the second digit is lane 0.
+	trace=$(sed -n \
+		-e 's/.*0x00202 AUX -> (ret=  6) \(..\) \(..\) \(..\) \(..\).*/\1\2\3\4/p' \
+		-e 's/.*0x00103 AUX <- (ret=  4) \(..\).*/w\1/p' \
+		-e 's/.*0x00102 AUX <- (ret=  5) \(..\) \(..\).*/p\1.\2/p' "$log" |
+		tr '\n' '>' | sed 's/>$//')
 	phy=$(tr -d '\0' < "$EDP_DBG/phy_settings" 2>/dev/null)
 	set -- $1 $2 $3 $phy
 	vs=${4:--1}; pe=${5:--1}
@@ -210,7 +237,7 @@ measure() {	# measure <phase> <cycle> <off_ms>
 	errors > /dev/null			# reading clears the counters
 	busy "$MEASURE_SECS"
 	e=$(errors | tr ' ' ',')
-	echo "$1,$2,$3,$retrained,$vs,$pe,$early,$status,$e,$PSR_BEFORE,$psr_after" >> "$CSV"
+	echo "$1,$2,$3,$retrained,$vs,$pe,$early,$status,$e,$PSR_BEFORE,$psr_after,$trace,$(power)" >> "$CSV"
 	say "$1 $2: trained VS=$vs PE=$pe  errors/lane: $e"
 }
 
@@ -256,6 +283,18 @@ NR > 1 {
 	if ($9 + $10 + $11 + $12 > 10) errs++
 	if ($9 < 0) noread++
 	if ($13 > 0) psr++
+	if (n == 1) { ac = $16; bat0 = $17; tmin = tmax = $19 }
+	if ($16 != ac) ac = "changed"
+	bat1 = $17
+	if ($19 < tmin) tmin = $19
+	if ($19 > tmax) tmax = $19
+	# Lane status read after pre-emphasis 1 was set (w09).
+	k = split($15, step, ">")
+	for (j = 1; j < k; j++)
+		if (step[j] == "w09") {
+			pe1++
+			if (substr(step[j + 1], 2, 1) == "7") lane0++
+		}
 }
 END {
 	printf "variant:                        %s\n", variant
@@ -266,6 +305,11 @@ END {
 	printf "cycles with link errors:        %d\n", errs
 	printf "cycles without error readout:   %d\n", noread
 	printf "PSR active when turned off:     %d\n", psr
+	printf "AC online (1 = yes):            %s\n", ac
+	printf "battery %% first/last cycle:     %s / %s\n", bat0, bat1
+	printf "hottest sensor, min/max C:      %s / %s\n", tmin, tmax
+	printf "trainings that tried level 1:   %d\n", pe1
+	printf "  lane 0 equalized at level 1:  %d\n", lane0
 	if (n == 0 || trained == 0)
 		v = "INCONCLUSIVE (the link was never retrained)"
 	else if (lowpe > 0 || errs > 0)

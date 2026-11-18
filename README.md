@@ -63,27 +63,31 @@ without a GitHub login.
 On the affected laptop, from a checkout of this repository:
 
 ```
-tools/flickerfix.sh run baseline    # or: run patched
+tools/flickerfix.sh install         # download both binaries, sign them
+tools/flickerfix.sh boot baseline   # reboot into one test (or: boot patched)
+tools/flickerfix.sh results         # afterwards: copy the result tarballs here
+tools/flickerfix.sh status          # what is installed, which results exist
+tools/flickerfix.sh remove          # delete binaries, results, boot entries
 ```
 
-This downloads the binary from the latest release, copies it to
-`EFI/flickerfix/` on the EFI system partition, signs it there with the local
-sbctl keys, creates a boot entry that is not in the boot order, sets the
-firmware's BootNext to it and reboots. The test runs by itself (about 30
-minutes) and reboots back into the installed system. Then:
+`install` downloads both binaries from the latest release, checks them
+against `SHA256SUMS`, copies them to `EFI/flickerfix/` on the EFI system
+partition, signs them there with the local sbctl keys and creates one boot
+entry each, outside the boot order.
 
-```
-tools/flickerfix.sh results         # copies the result tarballs here
-tools/flickerfix.sh remove          # deletes binaries, results, boot entries
-```
+`boot` sets the firmware's BootNext to one of those entries and does a
+normal reboot through systemd. Only that one boot starts the test. The test
+runs by itself (about 35 minutes) and reboots back into the installed
+system.
 
 Each run leaves one `flickerfix-run-NNN-<variant>.tar.gz`. It contains the
 EDID and machine details, so do not post it publicly.
 
-`-n` installs unsigned (Secure Boot must be off), `-f <file>` installs a
-local build. An optional `EFI/flickerfix/flickerfix.conf` on the partition
-sets the cycle counts (`DPMS_CYCLES`, `SUSPEND_CYCLES`, `MEASURE_SECS`,
-`IDLE_SECS`) and what happens at the end (`END_ACTION=reboot|poweroff|stay`).
+`install -n` installs unsigned (Secure Boot must be off), `install -f <dir>`
+installs a local build. An optional `EFI/flickerfix/flickerfix.conf` on the
+partition sets the cycle counts (`DPMS_CYCLES`, `SUSPEND_CYCLES`,
+`MEASURE_SECS`, `IDLE_SECS`) and what happens at the end
+(`END_ACTION=reboot|poweroff|stay`).
 
 ## What the binary is
 
@@ -107,7 +111,10 @@ driver retrain the eDP link. After each retrain it records:
   (`phy_settings` in debugfs),
 - the panel's symbol error counters (DPCD 0x210-0x217 over AUX),
 - whether the kernel log shows the "early sync" signature of a bad training,
-- the PSR state before the power-off and after the retrain.
+- the PSR state before the power-off and after the retrain,
+- the whole training as a trace: every lane status the panel reported and
+  every drive setting the driver tried,
+- AC, battery level and the hottest temperature sensor.
 
 `summary.txt` gives a verdict: GOOD if every training ended at level 2 or
 above with no link errors, BAD otherwise.
